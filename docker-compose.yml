@@ -1,0 +1,116 @@
+# `docker compose up -d` runs the whole stack in dev mode: Mongo (replica set),
+# ingest, API and web. Source is bind-mounted, so edits hot-reload in place.
+
+x-node: &node
+  build: ./docker/dev
+  image: alx-node-dev
+  working_dir: /app
+  # Host uid, so node_modules / build output written from the container stay yours.
+  user: "${UID:-1000}:${GID:-1000}"
+  volumes:
+    - ./:/app
+  environment:
+    HOME: /tmp
+    NEXT_TELEMETRY_DISABLED: "1"
+    # The replica set advertises 127.0.0.1 (right for host tools); containers
+    # reach Mongo by service name and skip discovery. Change streams still work.
+    MONGODB_URI: mongodb://mongo:27017/alx?directConnection=true
+    # Pass-through when set: `FEED_URL=... docker compose up -d` beats .env.
+    FEED_URL:
+    AIRPORT_CODE:
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+      - "8081:8081"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "db.adminCommand('ping').ok",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        mongosh --host mongo:27017 --quiet --eval '
+          try { rs.status().ok }
+          catch (e) {
+            rs.initiate({
+              _id: "rs0",
+              members: [{ _id: 0, host: "127.0.0.1:27017" }]
+            });
+          }
+        '
+        echo "replica set ready"
+
+  mongo-express:
+    image: mongo-express:1.0.2-20
+    restart: unless-stopped
+    network_mode: service:mongo
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://127.0.0.1:27017/?replicaSet=rs0
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+
+  # One-shot install into the shared node_modules (picks up package.json changes).
+  deps:
+    <<: *node
+    restart: "no"
+    command: npm install --no-audit --no-fund
+
+  ingest:
+    <<: *node
+    restart: unless-stopped
+    command: npm run dev:ingest
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+
+  api:
+    <<: *node
+    restart: unless-stopped
+    command: npm run dev:api
+    ports:
+      - "3001:3001"
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+
+  web:
+    <<: *node
+    restart: unless-stopped
+    command: npm run dev:web
+    ports:
+      - "3000:3000"
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+
+volumes:
+  mongo_data:

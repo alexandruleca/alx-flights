@@ -1,0 +1,20 @@
+{
+  "name": "alx-flights",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:api": "npm run dev -w @alx/api",
+    "dev:ingest": "npm run dev:ingest -w @alx/api",
+    "dev:web": "npm run dev -w @alx/web",
+    "dev:stack": "npm run dev:ingest & npm run dev:api & npm run dev:web",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test -w @alx/api",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "truth-check": "node scripts/truth-check.mjs"
+  }
+}

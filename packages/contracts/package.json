@@ -1,0 +1,7 @@
+{
+  "name": "@alx/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wire contract between the API and the web desk (types only)",
+  "types": "index.d.ts"
+}

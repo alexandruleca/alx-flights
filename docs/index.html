@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="The ALX live ops desk: what it does, how the ingest pipeline works, and the decisions behind it.">
+<title>ALX Ingest Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: one reading column; each diagram a framed figure that scrolls sideways on phones. */
+  :root {
+    --bg: #f3f5f8;
+    --panel: #ffffff;
+    --panel-2: #eaeef3;
+    --line: #c2cbd6;
+    --fg: #121a24;
+    --muted: #586677;
+    --arr: #0e7a51;
+    --dep: #bf3a45;
+    --warn: #a55805;
+    --accent: #1f5fbf;
+    --accent-soft: rgba(31, 95, 191, 0.10);
+    --dep-soft: rgba(191, 58, 69, 0.08);
+    --arr-soft: rgba(14, 122, 81, 0.10);
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0d11; --panel: #11161d; --panel-2: #18202a; --line: #2c3846;
+      --fg: #e6edf3; --muted: #8d9aa8; --arr: #3dd68c; --dep: #f07178; --warn: #ff9f43;
+      --accent: #59a8ff; --accent-soft: rgba(89, 168, 255, 0.14); --dep-soft: rgba(240, 113, 120, 0.12); --arr-soft: rgba(61, 214, 140, 0.14);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0d11; --panel: #11161d; --panel-2: #18202a; --line: #2c3846;
+    --fg: #e6edf3; --muted: #8d9aa8; --arr: #3dd68c; --dep: #f07178; --warn: #ff9f43;
+    --accent: #59a8ff; --accent-soft: rgba(89, 168, 255, 0.14); --dep-soft: rgba(240, 113, 120, 0.12); --arr-soft: rgba(61, 214, 140, 0.14);
+    color-scheme: dark;
+  }
+
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 400 16px/1.6 var(--sans); }
+  .page { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 72px; display: grid; gap: 56px; }
+  header.top { display: grid; gap: 14px; }
+  .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  h1, h2 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.1; }
+  h1 { font-size: clamp(34px, 5vw, 52px); letter-spacing: -0.01em; }
+  h2 { font-size: clamp(24px, 3vw, 30px); }
+  p { margin: 0; max-width: 68ch; }
+  .lede { font-size: 18px; color: var(--muted); }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 8px; }
+  nav.toc a { font: 500 13px/1 var(--sans); color: var(--fg); text-decoration: none; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+  nav.toc a:hover { border-color: var(--accent); }
+  nav.toc a:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  section { display: grid; gap: 18px; min-width: 0; }
+  .prose { display: grid; gap: 12px; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; min-width: 0; }
+  .fig-scroll { overflow-x: auto; }
+  figure svg { display: block; width: 100%; height: auto; min-width: 760px; }
+  figcaption { font-size: 14px; color: var(--muted); max-width: 80ch; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  th { font: 600 11px/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); background: var(--panel-2); }
+  td:first-child { font-weight: 600; }
+  .clock { display: inline-block; font: 600 11px/1.6 var(--mono); padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+  .clock.feed { color: var(--accent); background: var(--accent-soft); }
+  .clock.wall { color: var(--warn); border: 1px solid var(--warn); }
+  .note { border-left: 3px solid var(--warn); padding-left: 14px; }
+  .points { margin: 0; padding-left: 20px; display: grid; gap: 10px; max-width: 80ch; }
+  .points li { padding-left: 4px; }
+  .subhead { margin: 8px 0 0; font: 600 20px/1.2 var(--display); }
+  pre.tree { margin: 0; padding: 16px 18px; font: 400 13px/1.6 var(--mono); color: var(--fg); }
+  .run-line { font-size: 15px; color: var(--muted); }
+  .run-line code { color: var(--fg); }
+  .state { font: 600 11px/1.7 var(--mono); padding: 0 7px; border-radius: 4px; white-space: nowrap; justify-self: start; }
+  .state.built { color: var(--arr); background: var(--arr-soft); }
+  .state.skipped { color: var(--muted); border: 1px solid var(--line); }
+
+  /* Diagram vocabulary */
+  .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  .box-em { stroke: var(--accent); stroke-width: 1.8; }
+  .dec { stroke-dasharray: 5 4; stroke: var(--fg); }
+  .warnbox { stroke: var(--warn); stroke-width: 1.6; }
+  .head { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  .chip-rej { fill: var(--dep-soft); stroke: var(--dep); stroke-width: 1.2; }
+  .chip-skip { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.2; }
+  .chip-ok { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  .lane { fill: var(--dep-soft); stroke: var(--dep); stroke-width: 1.2; stroke-dasharray: 4 3; }
+  .diamond { fill: var(--panel); stroke: var(--fg); stroke-width: 1.3; }
+  .conn { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+  .gaprect { fill: url(#f4-hatch); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .hatch-line { stroke: var(--muted); stroke-width: 1; opacity: 0.55; }
+  .edge { stroke: var(--fg); stroke-width: 1.4; fill: none; }
+  .edge-pull { stroke-dasharray: 6 4; }
+  .edge-rej { stroke: var(--dep); }
+  .guide { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 4; fill: none; }
+  .rule { stroke: var(--line); stroke-width: 1; }
+  .ah { fill: var(--fg); }
+  .ah-rej { fill: var(--dep); }
+  .stay { fill: var(--accent); }
+  .unknown { stroke: var(--muted); stroke-width: 2.5; stroke-dasharray: 2 5; stroke-linecap: round; }
+  .track-arr { stroke: var(--arr); stroke-width: 2.5; }
+  .track-dep { stroke: var(--dep); stroke-width: 2.5; }
+  .track-rest { stroke: var(--arr); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.6; }
+  .dot-arr { fill: var(--arr); }
+  .dot-dep { fill: var(--dep); }
+  .bar-warn { fill: var(--warn); }
+  .bar-dep { fill: var(--dep); }
+  .bar-acc { fill: var(--accent); }
+  .mk { fill: var(--fg); }
+  .t-title { fill: var(--fg); font: 600 13px var(--sans); }
+  .t-sub { fill: var(--muted); font: 400 11px var(--sans); }
+  .t-code { fill: var(--fg); font: 500 11px var(--mono); }
+  .t-edge { fill: var(--fg); font: 500 11px var(--sans); }
+  .t-rej { fill: var(--dep); font: 500 11px var(--sans); }
+  .t-lab { fill: var(--fg); font: 500 12px var(--sans); }
+  .t-dec { fill: var(--fg); font: 600 12px var(--mono); }
+  .t-status { fill: var(--muted); font: 500 10.5px var(--mono); }
+  .t-note { fill: var(--muted); font: 400 11px var(--sans); }
+  .t-head { fill: var(--accent); font: 600 13px var(--mono); }
+  @media (prefers-reduced-motion: no-preference) { nav.toc a { transition: border-color 0.15s; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <span class="eyebrow">AirportLabs Field · ALX · ops desk</span>
+    <h1>ALX ingest pipeline</h1>
+    <p class="lede">How a line from the feed becomes the board, the alerts and the KPIs: the path it takes, the checks it passes, the rules it triggers, and why each rule is the way it is.</p>
+    <p class="run-line">Run it with <code>docker compose up -d</code>, then open <code>http://localhost:3000</code>. Every command and option is in the <a href="https://github.com/alexandruleca/alx-flights#readme">README</a>.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#path">The whole path</a>
+      <a href="#feed">What the feed does</a>
+      <a href="#line">One line through ingest</a>
+      <a href="#rules">What applyMessage decides</a>
+      <a href="#data">What each collection holds</a>
+      <a href="#live">How a change reaches the screen</a>
+      <a href="#gaps">Connections, gaps, restarts</a>
+      <a href="#turnaround">One turnaround</a>
+      <a href="#clocks">Feed clock and wall clock</a>
+      <a href="#decisions">Decisions</a>
+      <a href="#extras">Extras</a>
+      <a href="#tests">Tests</a>
+      <a href="#next">With two more days</a>
+      <a href="#code">Where the code is</a>
+      <a href="#ai">Time and AI usage</a>
+    </nav>
+  </header>
+
+  <!-- 1. The whole path -->
+  <section id="path">
+    <h2>The whole path</h2>
+    <div class="prose">
+      <p>Two processes, one database. Ingest owns the feed connection and is the only process that writes. The API never opens the feed: it loads the picture from Mongo once, then follows every change through change streams, and serves the desk from its own copy. A feed outage or an ingest crash leaves the API serving, and several API instances can run side by side.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1080 340" role="img" aria-label="The feed streams to ingest, which is the only writer to MongoDB. The API follows MongoDB through change streams and pushes to the desk over server-sent events; KPIs and replay frames are read from MongoDB when asked.">
+          <defs>
+            <marker id="f1-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- Feed -->
+          <rect class="box" x="20" y="40" width="140" height="250" rx="8"/>
+          <text class="t-title" x="90" y="68" text-anchor="middle">Feed</text>
+          <text class="t-sub" x="90" y="88" text-anchor="middle">NDJSON over HTTP</text>
+          <text class="t-code" x="90" y="120" text-anchor="middle">hello · snapshot</text>
+          <text class="t-code" x="90" y="138" text-anchor="middle">flight · position</text>
+          <text class="t-sub" x="90" y="168" text-anchor="middle">~10 messages / s</text>
+          <text class="t-sub" x="90" y="186" text-anchor="middle">drops at any time</text>
+          <!-- Ingest -->
+          <rect class="box box-em" x="230" y="40" width="160" height="250" rx="8"/>
+          <text class="t-title" x="310" y="68" text-anchor="middle">Ingest</text>
+          <text class="t-sub" x="310" y="88" text-anchor="middle">the only writer</text>
+          <text class="t-code" x="250" y="120">1  frame lines</text>
+          <text class="t-code" x="250" y="140">2  normalize</text>
+          <text class="t-code" x="250" y="160">3  applyMessage</text>
+          <text class="t-code" x="250" y="180">4  persist effects</text>
+          <line class="rule" x1="246" y1="204" x2="374" y2="204"/>
+          <text class="t-sub" x="310" y="228" text-anchor="middle">AirportState</text>
+          <text class="t-sub" x="310" y="244" text-anchor="middle">the working picture</text>
+          <!-- MongoDB -->
+          <rect class="box" x="460" y="40" width="160" height="250" rx="8"/>
+          <text class="t-title" x="540" y="68" text-anchor="middle">MongoDB</text>
+          <text class="t-sub" x="540" y="88" text-anchor="middle">replica set</text>
+          <text class="t-code" x="480" y="116">meta</text>
+          <text class="t-code" x="480" y="134">flights</text>
+          <text class="t-code" x="480" y="152">flightVersions</text>
+          <text class="t-code" x="480" y="170">positions</text>
+          <text class="t-code" x="480" y="188">alerts</text>
+          <text class="t-code" x="480" y="206">movements</text>
+          <text class="t-code" x="480" y="224">standOccupancy</text>
+          <text class="t-code" x="480" y="242">events</text>
+          <text class="t-code" x="480" y="260">anomalies</text>
+          <!-- API -->
+          <rect class="box" x="690" y="40" width="160" height="250" rx="8"/>
+          <text class="t-title" x="770" y="68" text-anchor="middle">API</text>
+          <text class="t-sub" x="770" y="88" text-anchor="middle">never opens the feed</text>
+          <text class="t-sub" x="770" y="116" text-anchor="middle">loads once, then</text>
+          <text class="t-sub" x="770" y="132" text-anchor="middle">follows every change</text>
+          <line class="rule" x1="706" y1="150" x2="834" y2="150"/>
+          <text class="t-sub" x="770" y="172" text-anchor="middle">AirportState (copy)</text>
+          <text class="t-code" x="770" y="190" text-anchor="middle">board · map · alerts</text>
+          <line class="rule" x1="706" y1="208" x2="834" y2="208"/>
+          <text class="t-sub" x="770" y="230" text-anchor="middle">KPIs: queried on ask</text>
+          <text class="t-sub" x="770" y="248" text-anchor="middle">replay: state at T</text>
+          <!-- Desk -->
+          <rect class="box" x="920" y="40" width="140" height="250" rx="8"/>
+          <text class="t-title" x="990" y="68" text-anchor="middle">Desk</text>
+          <text class="t-sub" x="990" y="88" text-anchor="middle">Next.js</text>
+          <text class="t-code" x="990" y="120" text-anchor="middle">Live</text>
+          <text class="t-sub" x="990" y="136" text-anchor="middle">pushed topics</text>
+          <text class="t-code" x="990" y="166" text-anchor="middle">Replay</text>
+          <text class="t-sub" x="990" y="182" text-anchor="middle">frame at the cursor</text>
+          <line class="rule" x1="936" y1="204" x2="1044" y2="204"/>
+          <text class="t-sub" x="990" y="228" text-anchor="middle">one view for both</text>
+          <!-- Edges -->
+          <line class="edge" x1="162" y1="120" x2="226" y2="120" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="195" y="110" text-anchor="middle">stream</text>
+          <line class="edge" x1="392" y1="120" x2="456" y2="120" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="425" y="110" text-anchor="middle">writes</text>
+          <text class="t-sub" x="425" y="138" text-anchor="middle">+ rejects</text>
+          <line class="edge" x1="622" y1="120" x2="686" y2="120" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="655" y="98" text-anchor="middle">change</text>
+          <text class="t-edge" x="655" y="110" text-anchor="middle">streams</text>
+          <line class="edge edge-pull" x1="622" y1="220" x2="686" y2="220" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="655" y="198" text-anchor="middle">reads</text>
+          <text class="t-edge" x="655" y="210" text-anchor="middle">when asked</text>
+          <line class="edge" x1="852" y1="120" x2="916" y2="120" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="885" y="98" text-anchor="middle">SSE, ≤ 2/s</text>
+          <text class="t-edge" x="885" y="110" text-anchor="middle">per topic</text>
+          <line class="edge edge-pull" x1="852" y1="220" x2="916" y2="220" marker-end="url(#f1-ah)"/>
+          <text class="t-edge" x="885" y="198" text-anchor="middle">REST</text>
+          <text class="t-edge" x="885" y="210" text-anchor="middle">polls</text>
+          <!-- Legend -->
+          <line class="edge" x1="20" y1="322" x2="60" y2="322"/>
+          <text class="t-note" x="68" y="326">pushed as it changes</text>
+          <line class="edge edge-pull" x1="230" y1="322" x2="270" y2="322"/>
+          <text class="t-note" x="278" y="326">read when asked: /kpis every 5 s, /history/frame per cursor move</text>
+        </svg>
+      </div>
+      <figcaption>Writes go one way, through one process. Live changes reach the desk as pushes; KPIs and replay frames are queries against what ingest stored.</figcaption>
+    </figure>
+  </section>
+
+  <!-- What the feed does -->
+  <section id="feed">
+    <h2>What the realistic feed does</h2>
+    <p>The realistic feed behaves like a production airport system. Watching it before designing, and again with the anomaly tape once ingest ran, showed each of these, and each has a rule.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>The feed</th><th>How ingest handles it</th></tr></thead>
+        <tbody>
+          <tr><td>Sends the same message again, many times a minute</td><td>A set of seqs seen on this connection. Not a "highest seq so far" mark: the same stream also delivers late messages that are new (49 after 50), and those must be kept.</td></tr>
+          <tr><td>Delivers versions out of order</td><td>Freshness per flight and per aircraft, by feed timestamp: an older version never rewinds the picture.</td></tr>
+          <tr><td>Sends GPS garbage: positions at exactly 0,0</td><td>Rejected as <code>bad_coords</code> and never stored.</td></tr>
+          <tr><td>Reports inbound aircraft well before they are near the field</td><td>Positions further than 15 km from the airport are skipped: real, just not ours (<a href="#decisions">decisions</a>). They are not anomalies, so they never reach the anomaly tape.</td></tr>
+          <tr><td>Splits a JSON object across two lines</td><td>The line framer rejoins it. A fragment the next line does not complete is abandoned and logged.</td></tr>
+          <tr><td>Drops the connection often, at irregular intervals</td><td>Reconnect at once, backing off only while connecting fails. Each connection brings a new <code>hello</code> and snapshot and restarts <code>seq</code>, so records carry a <code>connectionEpoch</code>. No rule assumes how long a gap lasts.</td></tr>
+          <tr><td>Repeats finished flights (departed, on stand) in every snapshot</td><td>Landings and take-offs are recorded from snapshots too, once per flight and kind.</td></tr>
+          <tr><td>Gives an <code>actual</code> time only for landing and take-off</td><td>Arriving on a stand and pushback are status changes only, so a stay on a stand is timed by those messages (<a href="#gaps">gaps</a>).</td></tr>
+          <tr><td>Keeps showing an old delay after the movement, e.g. on stand and still "late"</td><td>Delayed only while the landing or take-off is still to come; closed once landed, departed, diverted or cancelled.</td></tr>
+          <tr><td>Retires flights silently: they are just missing from the next snapshot</td><td>A snapshot is the full list: missing flights are pruned and their alerts closed.</td></tr>
+          <tr><td>Goes quiet on stand (about 15 s after arriving, until pushback) and about 15 km out after departure</td><td>Silent and stopped on the ground with a flight on the board: shown parked on its stand. Silent in the air: it left coverage and is removed.</td></tr>
+          <tr><td>Flies an arrival and its departure on one airframe (same <code>icao24</code> and <code>reg</code>)</td><td>The board links the two as a turnaround; the map shows the aircraft under its arrival until it is on stand, then under its departure.</td></tr>
+          <tr><td>Schedules a departure before its own arrival, common when the inbound is late (the estimate moves, not the schedule)</td><td>An aircraft's flights are ordered by when they land or take off (<code>actual</code>, else <code>estimated</code>), never by schedule.</td></tr>
+          <tr><td>Reassigns a stand to the next arrival while the previous aircraft is still boarding: usually normal sequencing, occasionally two aircraft on one stand</td><td>The stand-conflict rule waits for the landing (<a href="#turnaround">one turnaround</a>).</td></tr>
+          <tr><td>Every rejected line</td><td>Kept with its reason in <code>anomalies</code> and shown on the desk's anomaly tape.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 2. One line through ingest -->
+  <section id="line">
+    <h2>One line through ingest</h2>
+    <div class="prose">
+      <p>Every line from the feed passes the same gates, in order (<code>feed/framing.ts</code>, then <code>domain/normalize.ts</code>). A line that fails one is kept with the reason in <code>anomalies</code> and shows on the desk's anomaly tape. Nothing rejected reaches the airport picture. On the realistic feed, duplicates are by far the most common reject, then truncated lines, then positions at 0,0.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1100 290" role="img" aria-label="A feed line is split, rejoined if a newline broke it, then checked: valid JSON, has a type and seq, seq not seen on this connection, and for positions plausible coordinates. Failures become anomalies stamped with the wall clock. Passing messages go to applyMessage, which may skip stale versions, then are persisted in one batch.">
+          <defs>
+            <marker id="f2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="f2-ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah-rej" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- Normalizer bracket -->
+          <path class="guide" d="M296,32 V24 H820 V32"/>
+          <text class="t-code" x="558" y="18" text-anchor="middle">Normalizer · seen seqs reset on every connection</text>
+          <!-- Boxes -->
+          <rect class="box" x="20" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="75" y="64" text-anchor="middle">split lines</text>
+          <text class="t-sub" x="75" y="82" text-anchor="middle">on newline,</text>
+          <text class="t-sub" x="75" y="96" text-anchor="middle">trimmed</text>
+
+          <rect class="box" x="158" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="213" y="64" text-anchor="middle">LineFramer</text>
+          <text class="t-sub" x="213" y="82" text-anchor="middle">rejoins a {…} split</text>
+          <text class="t-sub" x="213" y="96" text-anchor="middle">across two lines</text>
+
+          <rect class="box" x="296" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="351" y="64" text-anchor="middle">JSON?</text>
+          <text class="t-sub" x="351" y="82" text-anchor="middle">parses as JSON</text>
+
+          <rect class="box" x="434" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="489" y="64" text-anchor="middle">Shape?</text>
+          <text class="t-sub" x="489" y="82" text-anchor="middle">known type,</text>
+          <text class="t-sub" x="489" y="96" text-anchor="middle">has a seq</text>
+
+          <rect class="box" x="572" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="627" y="64" text-anchor="middle">New seq?</text>
+          <text class="t-sub" x="627" y="82" text-anchor="middle">not seen on this</text>
+          <text class="t-sub" x="627" y="96" text-anchor="middle">connection</text>
+
+          <rect class="box" x="710" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="765" y="64" text-anchor="middle">Coords?</text>
+          <text class="t-sub" x="765" y="82" text-anchor="middle">positions: numbers,</text>
+          <text class="t-sub" x="765" y="96" text-anchor="middle">not 0,0</text>
+
+          <rect class="box box-em" x="848" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="903" y="64" text-anchor="middle">applyMessage</text>
+          <text class="t-sub" x="903" y="82" text-anchor="middle">domain rules</text>
+          <text class="t-sub" x="903" y="96" text-anchor="middle">→ effects</text>
+
+          <rect class="box" x="986" y="40" width="110" height="66" rx="6"/>
+          <text class="t-title" x="1041" y="64" text-anchor="middle">persist</text>
+          <text class="t-sub" x="1041" y="82" text-anchor="middle">a message's writes,</text>
+          <text class="t-sub" x="1041" y="96" text-anchor="middle">in parallel</text>
+
+          <!-- Pass arrows -->
+          <line class="edge" x1="131" y1="73" x2="155" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="269" y1="73" x2="293" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="407" y1="73" x2="431" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="545" y1="73" x2="569" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="683" y1="73" x2="707" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="821" y1="73" x2="845" y2="73" marker-end="url(#f2-ah)"/>
+          <line class="edge" x1="959" y1="73" x2="983" y2="73" marker-end="url(#f2-ah)"/>
+
+          <!-- Reject arrows and chips -->
+          <line class="edge edge-rej" x1="213" y1="106" x2="213" y2="144" marker-end="url(#f2-ahr)"/>
+          <text class="t-rej" x="219" y="130">gave up</text>
+          <rect class="chip-rej" x="158" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="213" y="163" text-anchor="middle">invalid_json</text>
+          <text class="t-sub" x="213" y="179" text-anchor="middle">unfinished fragment</text>
+
+          <line class="edge edge-rej" x1="351" y1="106" x2="351" y2="144" marker-end="url(#f2-ahr)"/>
+          <text class="t-rej" x="357" y="130">no</text>
+          <rect class="chip-rej" x="296" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="351" y="163" text-anchor="middle">invalid_json</text>
+          <text class="t-sub" x="351" y="179" text-anchor="middle">not JSON</text>
+
+          <line class="edge edge-rej" x1="489" y1="106" x2="489" y2="144" marker-end="url(#f2-ahr)"/>
+          <text class="t-rej" x="495" y="130">no</text>
+          <rect class="chip-rej" x="434" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="489" y="163" text-anchor="middle">invalid_shape</text>
+          <text class="t-sub" x="489" y="179" text-anchor="middle">no type or seq</text>
+
+          <line class="edge edge-rej" x1="627" y1="106" x2="627" y2="144" marker-end="url(#f2-ahr)"/>
+          <text class="t-rej" x="633" y="130">seen</text>
+          <rect class="chip-rej" x="572" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="627" y="163" text-anchor="middle">duplicate_seq</text>
+          <text class="t-sub" x="627" y="179" text-anchor="middle">a seq seen before</text>
+
+          <line class="edge edge-rej" x1="765" y1="106" x2="765" y2="144" marker-end="url(#f2-ahr)"/>
+          <text class="t-rej" x="771" y="130">no</text>
+          <rect class="chip-rej" x="710" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="765" y="163" text-anchor="middle">bad_coords</text>
+          <text class="t-sub" x="765" y="179" text-anchor="middle">GPS garbage</text>
+
+          <line class="edge" x1="903" y1="106" x2="903" y2="144" marker-end="url(#f2-ah)"/>
+          <text class="t-edge" x="909" y="130">skip</text>
+          <rect class="chip-skip" x="848" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="903" y="163" text-anchor="middle">skipped</text>
+          <text class="t-sub" x="903" y="179" text-anchor="middle">stale, locked, far</text>
+          <text class="t-note" x="903" y="206" text-anchor="middle">not an anomaly:</text>
+          <text class="t-note" x="903" y="220" text-anchor="middle">the feed is fine</text>
+
+          <line class="edge" x1="1041" y1="106" x2="1041" y2="144" marker-end="url(#f2-ah)"/>
+          <rect class="chip-ok" x="986" y="146" width="110" height="42" rx="5"/>
+          <text class="t-code" x="1041" y="163" text-anchor="middle">MongoDB</text>
+          <text class="t-sub" x="1041" y="179" text-anchor="middle">upserts + inserts</text>
+
+          <!-- Rejects lane -->
+          <line class="edge edge-rej" x1="213" y1="188" x2="213" y2="222" marker-end="url(#f2-ahr)"/>
+          <line class="edge edge-rej" x1="351" y1="188" x2="351" y2="222" marker-end="url(#f2-ahr)"/>
+          <line class="edge edge-rej" x1="489" y1="188" x2="489" y2="222" marker-end="url(#f2-ahr)"/>
+          <line class="edge edge-rej" x1="627" y1="188" x2="627" y2="222" marker-end="url(#f2-ahr)"/>
+          <line class="edge edge-rej" x1="765" y1="188" x2="765" y2="222" marker-end="url(#f2-ahr)"/>
+          <rect class="lane" x="158" y="224" width="662" height="46" rx="6"/>
+          <text class="t-lab" x="489" y="243" text-anchor="middle">kept in anomalies + the timeline, with the reason</text>
+          <text class="t-note" x="489" y="260" text-anchor="middle">stamped with the wall clock: a broken line has no timestamp to trust</text>
+        </svg>
+      </div>
+      <figcaption>Duplicates are caught by a set of seqs seen on this connection, not a "highest seq so far" mark: the feed also delivers late messages that are new (49 after 50), and a high-water mark would drop them.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 3. applyMessage -->
+  <section id="rules">
+    <h2>What applyMessage decides</h2>
+    <div class="prose">
+      <p><code>domain/apply.ts</code> is the single entry point to the rules: one trusted message in, a list of effects out, no I/O. The same function runs in ingest, and its projections (<code>board</code>, <code>mapView</code>, alerts) are what the API and replay read, so live and replay cannot disagree about what the board shows.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1000 724" role="img" aria-label="A hello is checked against the configured airport and either accepted or locks the feed. Other messages are skipped while locked; otherwise the last-heard time is updated, then snapshots replace the picture, flights and positions are stored only if newer than the version held. All effects are persisted together.">
+          <defs>
+            <marker id="f3-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <rect class="box" x="390" y="16" width="220" height="44" rx="6"/>
+          <text class="t-title" x="500" y="36" text-anchor="middle">trusted message</text>
+          <text class="t-sub" x="500" y="52" text-anchor="middle">from the normalizer</text>
+          <line class="edge" x1="500" y1="60" x2="500" y2="84" marker-end="url(#f3-ah)"/>
+
+          <polygon class="diamond" points="500,86 572,114 500,142 428,114"/>
+          <text class="t-dec" x="500" y="118" text-anchor="middle">hello?</text>
+          <line class="edge" x1="428" y1="114" x2="324" y2="114" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="376" y="106" text-anchor="middle">yes</text>
+          <rect class="box dec" x="100" y="94" width="220" height="40" rx="6"/>
+          <text class="t-dec" x="210" y="118" text-anchor="middle">airport = AIRPORT_CODE?</text>
+          <line class="edge" x1="170" y1="134" x2="112" y2="166" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="128" y="150" text-anchor="middle">yes</text>
+          <line class="edge" x1="250" y1="134" x2="308" y2="166" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="292" y="150" text-anchor="middle">no</text>
+          <rect class="box" x="20" y="170" width="180" height="48" rx="6"/>
+          <text class="t-title" x="110" y="190" text-anchor="middle">store airport, zones</text>
+          <text class="t-sub" x="110" y="206" text-anchor="middle">the feed is accepted</text>
+          <rect class="box warnbox" x="220" y="170" width="180" height="48" rx="6"/>
+          <text class="t-title" x="310" y="190" text-anchor="middle">lock the feed</text>
+          <text class="t-sub" x="310" y="206" text-anchor="middle">desk shows “misconfigured”</text>
+
+          <line class="edge" x1="500" y1="142" x2="500" y2="176" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="508" y="163">no</text>
+          <polygon class="diamond" points="500,178 572,206 500,234 428,206"/>
+          <text class="t-dec" x="500" y="210" text-anchor="middle">locked?</text>
+          <line class="edge" x1="572" y1="206" x2="654" y2="206" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="613" y="198" text-anchor="middle">yes</text>
+          <rect class="box" x="658" y="186" width="250" height="40" rx="6"/>
+          <text class="t-title" x="783" y="211" text-anchor="middle">skipped until a hello for ALX</text>
+          <line class="edge" x1="500" y1="234" x2="500" y2="260" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="508" y="252">no</text>
+          <rect class="box box-em" x="340" y="262" width="320" height="46" rx="6"/>
+          <text class="t-code" x="500" y="282" text-anchor="middle">heardAt ← newest feed ts</text>
+          <text class="t-sub" x="500" y="299" text-anchor="middle">the last moment the picture was current</text>
+
+          <!-- split into three columns -->
+          <line class="edge" x1="500" y1="308" x2="500" y2="326"/>
+          <line class="edge" x1="170" y1="326" x2="830" y2="326"/>
+          <line class="edge" x1="170" y1="326" x2="170" y2="342" marker-end="url(#f3-ah)"/>
+          <line class="edge" x1="500" y1="326" x2="500" y2="342" marker-end="url(#f3-ah)"/>
+          <line class="edge" x1="830" y1="326" x2="830" y2="342" marker-end="url(#f3-ah)"/>
+          <rect class="head" x="40" y="344" width="260" height="30" rx="6"/>
+          <text class="t-head" x="170" y="364" text-anchor="middle">snapshot</text>
+          <rect class="head" x="370" y="344" width="260" height="30" rx="6"/>
+          <text class="t-head" x="500" y="364" text-anchor="middle">flight</text>
+          <rect class="head" x="700" y="344" width="260" height="30" rx="6"/>
+          <text class="t-head" x="830" y="364" text-anchor="middle">position</text>
+
+          <!-- snapshot column -->
+          <line class="edge" x1="170" y1="374" x2="170" y2="392" marker-end="url(#f3-ah)"/>
+          <rect class="box" x="40" y="394" width="260" height="44" rx="6"/>
+          <text class="t-title" x="170" y="414" text-anchor="middle">replace every flight + aircraft</text>
+          <text class="t-sub" x="170" y="430" text-anchor="middle">each: movement, Delayed (as a flight)</text>
+          <line class="edge" x1="170" y1="438" x2="170" y2="456" marker-end="url(#f3-ah)"/>
+          <rect class="box" x="40" y="458" width="260" height="44" rx="6"/>
+          <text class="t-title" x="170" y="478" text-anchor="middle">close alerts of flights left out</text>
+          <text class="t-sub" x="170" y="494" text-anchor="middle">those flights have left the feed</text>
+          <line class="edge" x1="170" y1="502" x2="170" y2="520" marker-end="url(#f3-ah)"/>
+          <rect class="box" x="40" y="522" width="260" height="56" rx="6"/>
+          <text class="t-title" x="170" y="542" text-anchor="middle">stand rules</text>
+          <text class="t-sub" x="170" y="558" text-anchor="middle">a stay that ended during the gap</text>
+          <text class="t-sub" x="170" y="572" text-anchor="middle">ends at heardAt, not now</text>
+
+          <!-- flight column -->
+          <line class="edge" x1="500" y1="374" x2="500" y2="392" marker-end="url(#f3-ah)"/>
+          <rect class="box dec" x="370" y="394" width="260" height="44" rx="6"/>
+          <text class="t-title" x="500" y="414" text-anchor="middle">newer than the version held?</text>
+          <text class="t-sub" x="500" y="430" text-anchor="middle">no → skipped as stale</text>
+          <line class="edge" x1="500" y1="438" x2="500" y2="456" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="508" y="451">yes</text>
+          <rect class="box" x="370" y="458" width="260" height="44" rx="6"/>
+          <text class="t-title" x="500" y="478" text-anchor="middle">store the version</text>
+          <text class="t-sub" x="500" y="494" text-anchor="middle">flights + flightVersions</text>
+          <line class="edge" x1="500" y1="502" x2="500" y2="520" marker-end="url(#f3-ah)"/>
+          <rect class="box" x="370" y="522" width="260" height="44" rx="6"/>
+          <text class="t-title" x="500" y="542" text-anchor="middle">log landing / take-off once</text>
+          <text class="t-sub" x="500" y="558" text-anchor="middle">keyed flight + kind, at its actual time</text>
+          <line class="edge" x1="500" y1="566" x2="500" y2="584" marker-end="url(#f3-ah)"/>
+          <rect class="box" x="370" y="586" width="260" height="44" rx="6"/>
+          <text class="t-title" x="500" y="606" text-anchor="middle">Delayed alert, stand rules</text>
+          <text class="t-sub" x="500" y="622" text-anchor="middle">raise · update · close; open · close stays</text>
+
+          <!-- position column -->
+          <line class="edge" x1="830" y1="374" x2="830" y2="392" marker-end="url(#f3-ah)"/>
+          <rect class="box dec" x="700" y="394" width="260" height="44" rx="6"/>
+          <text class="t-title" x="830" y="414" text-anchor="middle">newer than the one held?</text>
+          <text class="t-sub" x="830" y="430" text-anchor="middle">no → skipped as stale</text>
+          <line class="edge" x1="830" y1="438" x2="830" y2="456" marker-end="url(#f3-ah)"/>
+          <text class="t-edge" x="838" y="451">yes</text>
+          <rect class="box" x="700" y="458" width="260" height="44" rx="6"/>
+          <text class="t-title" x="830" y="478" text-anchor="middle">store the position</text>
+          <text class="t-sub" x="830" y="494" text-anchor="middle">the map now, replay later</text>
+
+          <!-- join -->
+          <line class="edge" x1="170" y1="578" x2="170" y2="652"/>
+          <line class="edge" x1="500" y1="630" x2="500" y2="652"/>
+          <line class="edge" x1="830" y1="502" x2="830" y2="652"/>
+          <line class="edge" x1="170" y1="652" x2="830" y2="652"/>
+          <line class="edge" x1="500" y1="652" x2="500" y2="670" marker-end="url(#f3-ah)"/>
+          <rect class="box box-em" x="340" y="672" width="320" height="44" rx="6"/>
+          <text class="t-title" x="500" y="692" text-anchor="middle">effects → written to Mongo</text>
+          <text class="t-sub" x="500" y="708" text-anchor="middle">all of one message's writes, plus timeline rows</text>
+        </svg>
+      </div>
+      <figcaption>"Newer" means a later feed timestamp for that flight or that aircraft, whatever order messages arrive in. An older version of one flight can never rewind it, and a late but new message for another flight is still accepted.</figcaption>
+    </figure>
+  </section>
+
+  <!-- Data model -->
+  <section id="data">
+    <h2>What each collection holds</h2>
+    <div class="prose">
+      <p>Ingest writes three kinds of data. <strong>The feed's own records</strong>, kept as received and stamped with the message's <code>ts</code>, <code>seq</code> and <code>connectionEpoch</code>: <code>flights</code> (the version held now), <code>flightVersions</code> (every version) and <code>positions</code> (every report). <strong>Records the rules work out</strong>, which the feed never sends: <code>alerts</code>, <code>movements</code> and <code>standOccupancy</code>. <strong>Logs</strong>: <code>events</code>, one row per change for the scrubber and the replay log, and <code>anomalies</code>, every rejected line. <code>meta</code> is a single document describing the feed link.</p>
+      <p>"One per key" collections are upserts on a unique index, so a message seen twice, or a snapshot repeating a finished flight, changes nothing. "Append" collections only ever grow.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1100 640" role="img" aria-label="hello writes meta. flight messages and a snapshot's flights become flight versions, written to flights and flightVersions. The rules run over the current flights and write alerts, movements and standOccupancy. Positions from a snapshot or a position message are appended to positions. Every applied message adds events rows, and rejected lines go to anomalies.">
+          <defs>
+            <marker id="f6-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="f6-ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah-rej" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- column heads -->
+          <text class="t-code" x="105" y="20" text-anchor="middle">FEED MESSAGE</text>
+          <text class="t-code" x="410" y="20" text-anchor="middle">WHAT INGEST DOES</text>
+          <text class="t-code" x="910" y="20" text-anchor="middle">COLLECTION · HOW IT IS WRITTEN</text>
+
+          <!-- messages -->
+          <rect class="head" x="20" y="38" width="170" height="44" rx="6"/>
+          <text class="t-head" x="105" y="57" text-anchor="middle">hello</text>
+          <text class="t-sub" x="105" y="73" text-anchor="middle">airport · zones</text>
+          <rect class="head" x="20" y="118" width="170" height="44" rx="6"/>
+          <text class="t-head" x="105" y="137" text-anchor="middle">flight</text>
+          <text class="t-sub" x="105" y="153" text-anchor="middle">one flight record</text>
+          <rect class="head" x="20" y="210" width="170" height="60" rx="6"/>
+          <text class="t-head" x="105" y="230" text-anchor="middle">snapshot</text>
+          <text class="t-sub" x="105" y="246" text-anchor="middle">flights[] · aircraft[]</text>
+          <text class="t-sub" x="105" y="261" text-anchor="middle">on every connect</text>
+          <rect class="head" x="20" y="438" width="170" height="44" rx="6"/>
+          <text class="t-head" x="105" y="457" text-anchor="middle">position</text>
+          <text class="t-sub" x="105" y="473" text-anchor="middle">one aircraft report</text>
+          <rect class="chip-rej" x="20" y="578" width="170" height="44" rx="6"/>
+          <text class="t-title" x="105" y="597" text-anchor="middle">rejected line</text>
+          <text class="t-sub" x="105" y="613" text-anchor="middle">framer / normalizer</text>
+
+          <!-- what ingest does -->
+          <rect class="box" x="300" y="128" width="220" height="62" rx="6"/>
+          <text class="t-title" x="410" y="148" text-anchor="middle">a flight version</text>
+          <text class="t-sub" x="410" y="164" text-anchor="middle">kept if newer than the one held,</text>
+          <text class="t-sub" x="410" y="179" text-anchor="middle">stamped ts · seq · epoch</text>
+          <rect class="box box-em" x="300" y="276" width="220" height="88" rx="6"/>
+          <text class="t-title" x="410" y="297" text-anchor="middle">rules over the current flights</text>
+          <text class="t-sub" x="410" y="315" text-anchor="middle">Delayed · stand conflicts</text>
+          <text class="t-sub" x="410" y="331" text-anchor="middle">landing / take-off happened</text>
+          <text class="t-sub" x="410" y="347" text-anchor="middle">who is on which stand</text>
+          <rect class="box" x="300" y="430" width="220" height="60" rx="6"/>
+          <text class="t-title" x="410" y="451" text-anchor="middle">an aircraft report</text>
+          <text class="t-sub" x="410" y="467" text-anchor="middle">kept if newer than the one held,</text>
+          <text class="t-sub" x="410" y="482" text-anchor="middle">stamped ts · seq · epoch</text>
+          <rect class="box" x="300" y="514" width="220" height="48" rx="6"/>
+          <text class="t-title" x="410" y="534" text-anchor="middle">timeline rows</text>
+          <text class="t-sub" x="410" y="550" text-anchor="middle">for every applied message</text>
+
+          <!-- collections -->
+          <rect class="box" x="740" y="38" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="56">meta · one doc, _id "current"</text>
+          <text class="t-sub" x="756" y="72">airport · zones · feed · connectionEpoch · lock</text>
+          <rect class="box" x="740" y="108" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="126">flights · one per flightId</text>
+          <text class="t-sub" x="756" y="142">the version held now; a snapshot deletes flights it left out</text>
+          <rect class="box" x="740" y="168" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="186">flightVersions · append</text>
+          <text class="t-sub" x="756" y="202">every accepted version: the flight as it was at any T</text>
+          <rect class="box" x="740" y="238" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="256">alerts · one per raising</text>
+          <text class="t-sub" x="756" y="272">id = subject@raisedAt; closedAt null while open</text>
+          <rect class="box" x="740" y="298" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="316">movements · one per flightId + kind</text>
+          <text class="t-sub" x="756" y="332">ts = the actual time, scheduled: movements, on time</text>
+          <rect class="box" x="740" y="358" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="376">standOccupancy · one per arrival</text>
+          <text class="t-sub" x="756" y="392">stand, from (on-block), to (off-block, null while there)</text>
+          <rect class="box" x="740" y="438" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="456">positions · append</text>
+          <text class="t-sub" x="756" y="472">icao24 + ts: lat, lon, alt, gs, track, onGround</text>
+          <rect class="box" x="740" y="516" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="534">events · append</text>
+          <text class="t-sub" x="756" y="550">ts, type, summary: the scrubber and the replay log</text>
+          <rect class="lane" x="740" y="578" width="340" height="44" rx="6"/>
+          <text class="t-code" x="756" y="596">anomalies · append</text>
+          <text class="t-sub" x="756" y="612">at (wall clock), reason, detail, raw; plus an events row</text>
+
+          <!-- edges: messages → ingest -->
+          <line class="edge" x1="192" y1="60" x2="736" y2="60" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="463" y="52" text-anchor="middle">airport, zones, lock (wrong airport)</text>
+          <line class="edge" x1="192" y1="140" x2="296" y2="152" marker-end="url(#f6-ah)"/>
+          <line class="edge" x1="192" y1="222" x2="296" y2="176" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="243" y="190" text-anchor="middle">flights[]</text>
+          <line class="edge" x1="192" y1="256" x2="296" y2="446" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="240" y="334">aircraft[]</text>
+          <line class="edge" x1="192" y1="460" x2="296" y2="460" marker-end="url(#f6-ah)"/>
+          <line class="edge edge-rej" x1="192" y1="600" x2="736" y2="600" marker-end="url(#f6-ahr)"/>
+          <text class="t-rej" x="463" y="592" text-anchor="middle">kept with the reason</text>
+
+          <!-- edges: ingest → collections -->
+          <line class="edge" x1="522" y1="146" x2="736" y2="130" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="730" y="120" text-anchor="end">current version (upsert)</text>
+          <line class="edge" x1="522" y1="172" x2="736" y2="190" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="730" y="215" text-anchor="end">every version (insert)</text>
+          <line class="edge" x1="410" y1="190" x2="410" y2="272" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="418" y="236">current flights</text>
+          <line class="edge" x1="522" y1="300" x2="736" y2="260" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="730" y="250" text-anchor="end">raise · update · close</text>
+          <line class="edge" x1="522" y1="320" x2="736" y2="320" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="730" y="312" text-anchor="end">once per landing / take-off</text>
+          <line class="edge" x1="522" y1="340" x2="736" y2="380" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="730" y="396" text-anchor="end">open · close a stay</text>
+          <line class="edge" x1="522" y1="460" x2="736" y2="460" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="628" y="452" text-anchor="middle">every report (insert)</text>
+          <line class="edge" x1="522" y1="538" x2="736" y2="538" marker-end="url(#f6-ah)"/>
+          <text class="t-edge" x="628" y="530" text-anchor="middle">a row per change</text>
+        </svg>
+      </div>
+      <figcaption>Only three collections are copies of what the feed sent. The other rows exist because ingest worked them out, so they can be wrong in ways the feed cannot: that is what the truth check compares against the clean feed.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>Every row carries the keys that join it to the rest. <code>flightId</code> ties a flight to its versions, its landing or take-off, its stay on a stand, its alerts and its timeline rows. <code>icao24</code> is the airframe: it joins a flight to that aircraft's positions, and an arrival to its departure. <code>ts</code> is feed time, which is how replay finds the picture at an instant.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1100 430" role="img" aria-label="flights and flightVersions share flightId with movements, standOccupancy, alerts and events, and share icao24 with positions. Stays and stand-conflict alerts also share the stand.">
+          <!-- positions -->
+          <rect class="box" x="30" y="150" width="240" height="96" rx="6"/>
+          <text class="t-code" x="46" y="172">positions</text>
+          <line class="rule" x1="46" y1="182" x2="254" y2="182"/>
+          <text class="t-code" x="46" y="202">icao24</text>
+          <text class="t-sub" x="46" y="220">ts · lat · lon · alt · gs · track</text>
+          <text class="t-sub" x="46" y="236">callsign · onGround</text>
+          <!-- flights / flightVersions -->
+          <rect class="box box-em" x="400" y="110" width="280" height="176" rx="6"/>
+          <text class="t-code" x="416" y="132">flights · flightVersions</text>
+          <line class="rule" x1="416" y1="142" x2="664" y2="142"/>
+          <text class="t-code" x="416" y="162">flightId</text>
+          <text class="t-code" x="416" y="180">icao24 · reg</text>
+          <text class="t-code" x="416" y="198">stand</text>
+          <text class="t-sub" x="416" y="216">kind · status · callsign</text>
+          <text class="t-sub" x="416" y="232">origin · destination</text>
+          <text class="t-sub" x="416" y="248">scheduled · estimated · actual</text>
+          <text class="t-sub" x="416" y="264">ts · seq · connectionEpoch</text>
+          <!-- right side -->
+          <rect class="box" x="810" y="20" width="260" height="70" rx="6"/>
+          <text class="t-code" x="826" y="42">movements</text>
+          <line class="rule" x1="826" y1="52" x2="1054" y2="52"/>
+          <text class="t-code" x="826" y="70">flightId + kind</text>
+          <text class="t-sub" x="826" y="84">ts (actual) · scheduled</text>
+          <rect class="box" x="810" y="118" width="260" height="70" rx="6"/>
+          <text class="t-code" x="826" y="140">standOccupancy</text>
+          <line class="rule" x1="826" y1="150" x2="1054" y2="150"/>
+          <text class="t-code" x="826" y="168">flightId (the arrival) · stand</text>
+          <text class="t-sub" x="826" y="182">from · to</text>
+          <rect class="box" x="810" y="216" width="260" height="70" rx="6"/>
+          <text class="t-code" x="826" y="238">alerts</text>
+          <line class="rule" x1="826" y1="248" x2="1054" y2="248"/>
+          <text class="t-code" x="826" y="266">id · subject · flightId</text>
+          <text class="t-sub" x="826" y="280">type · message · raisedAt · closedAt</text>
+          <rect class="box" x="810" y="314" width="260" height="70" rx="6"/>
+          <text class="t-code" x="826" y="336">events</text>
+          <line class="rule" x1="826" y1="346" x2="1054" y2="346"/>
+          <text class="t-code" x="826" y="364">ts · type · flightId? · icao24?</text>
+          <text class="t-sub" x="826" y="378">summary · connectionEpoch</text>
+          <!-- joins -->
+          <line class="edge" x1="400" y1="176" x2="272" y2="198"/>
+          <text class="t-edge" x="336" y="166" text-anchor="middle">icao24</text>
+          <text class="t-note" x="336" y="230" text-anchor="middle">the airframe</text>
+          <path class="edge" d="M680,158 C745,158 745,66 808,66"/>
+          <path class="edge" d="M680,158 C745,158 745,164 808,164"/>
+          <path class="edge" d="M680,158 C745,158 745,262 808,262"/>
+          <path class="edge" d="M680,158 C745,158 745,360 808,360"/>
+          <text class="t-edge" x="690" y="128">flightId</text>
+          <path class="edge edge-pull" d="M1070,168 C1092,168 1092,262 1070,262"/>
+          <text class="t-edge" x="1080" y="207" text-anchor="end">stand</text>
+          <!-- meta and anomalies -->
+          <rect class="box" x="30" y="300" width="240" height="56" rx="6"/>
+          <text class="t-code" x="46" y="322">meta</text>
+          <text class="t-sub" x="46" y="340">one doc: the feed link, joins nothing</text>
+          <rect class="lane" x="30" y="370" width="240" height="56" rx="6"/>
+          <text class="t-code" x="46" y="392">anomalies</text>
+          <text class="t-sub" x="46" y="410">at · reason · detail · raw · seq</text>
+          <line class="edge edge-pull" x1="272" y1="398" x2="808" y2="370"/>
+          <text class="t-edge" x="540" y="414" text-anchor="middle">each also an events row (type: anomaly)</text>
+        </svg>
+      </div>
+      <figcaption>An alert is about a subject, <code>delayed:&lt;flightId&gt;</code> or <code>stand:&lt;stand&gt;</code>, which has at most one open alert; raised again later, it gets a new row, so the log keeps every raising. A stand-conflict alert points at the incoming arrival's flightId; a stay is keyed by its arrival's flightId and names its stand. Replay at T takes, per flightId, the newest flightVersions row with ts ≤ T since the last snapshot row in events, and per icao24 the newest position.</figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Collection</th><th>Written by ingest when</th><th>Read by</th></tr></thead>
+        <tbody>
+          <tr><td><code>meta</code></td><td>a hello arrives</td><td>the API mirror (change stream), replay</td></tr>
+          <tr><td><code>flights</code></td><td>a newer flight version; a snapshot also deletes what it left out</td><td>the API mirror (change stream): the live board</td></tr>
+          <tr><td><code>flightVersions</code></td><td>every newer flight version</td><td>replay: the board at T</td></tr>
+          <tr><td><code>positions</code></td><td>every newer aircraft report</td><td>the API mirror (change stream): the live map; replay</td></tr>
+          <tr><td><code>alerts</code></td><td>an alert is raised, its message changes, or it closes</td><td>the API mirror (change stream); the alert log</td></tr>
+          <tr><td><code>movements</code></td><td>a flight is first seen landed or departed</td><td>the KPIs; ingest on restart (counted once)</td></tr>
+          <tr><td><code>standOccupancy</code></td><td>an aircraft is first seen on its stand, and when it leaves</td><td>the KPIs; ingest on restart (stays still open)</td></tr>
+          <tr><td><code>events</code></td><td>every applied message and each thing it changed</td><td>the scrubber, the replay log, replay's snapshot boundary; ingest on restart (last heard)</td></tr>
+          <tr><td><code>anomalies</code></td><td>a line is rejected</td><td>the API mirror (change stream): the anomaly tape</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Live updates -->
+  <section id="live">
+    <h2>How a change reaches the screen</h2>
+    <div class="prose">
+      <p>Nothing on the live desk polls for the board, the map or the alerts. Ingest writes to Mongo; the API is told by a change stream, updates its own copy of the airport, and marks which desk topics changed. Twice a second it pushes each changed topic, whole, over one server-sent events connection. The browser swaps that topic in and React re-renders.</p>
+      <p>A push carries the entire topic (the whole board, the whole map), never a diff. A push that is missed, or a browser that reconnects, is healed by the next one: the desk cannot drift away from the API's copy.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1100 610" role="img" aria-label="Ingest writes to MongoDB; a change stream event reaches the API mirror, which updates AirportState and marks topics changed; every 500 ms the batcher flushes each changed topic once; the SSE stream builds the topic's payload from AirportState and sends it; the browser replaces that topic and re-renders. On connect the stream first sends every topic once.">
+          <defs>
+            <marker id="f7-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- lanes -->
+          <rect class="box" x="20" y="16" width="150" height="44" rx="6"/>
+          <text class="t-title" x="95" y="35" text-anchor="middle">Ingest</text>
+          <text class="t-sub" x="95" y="51" text-anchor="middle">the only writer</text>
+          <rect class="box" x="205" y="16" width="150" height="44" rx="6"/>
+          <text class="t-title" x="280" y="35" text-anchor="middle">MongoDB</text>
+          <text class="t-sub" x="280" y="51" text-anchor="middle">replica set</text>
+          <rect class="box box-em" x="390" y="16" width="150" height="44" rx="6"/>
+          <text class="t-title" x="465" y="35" text-anchor="middle">API mirror</text>
+          <text class="t-sub" x="465" y="51" text-anchor="middle">MirrorService</text>
+          <rect class="box" x="575" y="16" width="150" height="44" rx="6"/>
+          <text class="t-title" x="650" y="35" text-anchor="middle">Change batcher</text>
+          <text class="t-sub" x="650" y="51" text-anchor="middle">AirportEventsService</text>
+          <rect class="box" x="760" y="16" width="150" height="44" rx="6"/>
+          <text class="t-title" x="835" y="35" text-anchor="middle">GET /stream</text>
+          <text class="t-sub" x="835" y="51" text-anchor="middle">LiveController (SSE)</text>
+          <rect class="box" x="930" y="16" width="160" height="44" rx="6"/>
+          <text class="t-title" x="1010" y="35" text-anchor="middle">Browser</text>
+          <text class="t-sub" x="1010" y="51" text-anchor="middle">useLiveDesk → OpsView</text>
+          <line class="guide" x1="95" y1="60" x2="95" y2="470"/>
+          <line class="guide" x1="280" y1="60" x2="280" y2="470"/>
+          <line class="guide" x1="465" y1="60" x2="465" y2="600"/>
+          <line class="guide" x1="650" y1="60" x2="650" y2="470"/>
+          <line class="guide" x1="835" y1="60" x2="835" y2="600"/>
+          <line class="guide" x1="1010" y1="60" x2="1010" y2="600"/>
+
+          <!-- 1 write -->
+          <line class="edge" x1="95" y1="100" x2="276" y2="100" marker-end="url(#f7-ah)"/>
+          <text class="t-edge" x="187" y="92" text-anchor="middle">1 · a message's effects</text>
+          <!-- 2 change event -->
+          <line class="edge" x1="280" y1="145" x2="461" y2="145" marker-end="url(#f7-ah)"/>
+          <text class="t-edge" x="372" y="137" text-anchor="middle">2 · change event + document</text>
+          <!-- 3 mirror note -->
+          <rect class="box" x="380" y="164" width="170" height="44" rx="6"/>
+          <text class="t-title" x="465" y="183" text-anchor="middle">3 · into AirportState</text>
+          <text class="t-sub" x="465" y="199" text-anchor="middle">an older position is dropped</text>
+          <!-- 4 changed -->
+          <line class="edge" x1="465" y1="232" x2="646" y2="232" marker-end="url(#f7-ah)"/>
+          <text class="t-code" x="548" y="224" text-anchor="middle">4 · changed('board', 'map')</text>
+          <!-- 5 batcher note -->
+          <rect class="box" x="565" y="250" width="170" height="44" rx="6"/>
+          <text class="t-title" x="650" y="269" text-anchor="middle">5 · pending topics</text>
+          <text class="t-sub" x="650" y="285" text-anchor="middle">a set: repeats collapse</text>
+          <!-- 6 flush -->
+          <line class="edge" x1="650" y1="320" x2="831" y2="320" marker-end="url(#f7-ah)"/>
+          <text class="t-edge" x="742" y="304" text-anchor="middle">6 · every 500 ms:</text>
+          <text class="t-edge" x="742" y="315" text-anchor="middle">each pending topic once</text>
+          <!-- 7 payload note -->
+          <rect class="box" x="750" y="338" width="170" height="58" rx="6"/>
+          <text class="t-title" x="835" y="357" text-anchor="middle">7 · build the payload</text>
+          <text class="t-sub" x="835" y="373" text-anchor="middle">from AirportState now:</text>
+          <text class="t-code" x="835" y="388" text-anchor="middle">board() · mapView() …</text>
+          <!-- 8 push -->
+          <line class="edge" x1="835" y1="420" x2="1006" y2="420" marker-end="url(#f7-ah)"/>
+          <text class="t-code" x="922" y="412" text-anchor="middle">8 · event: board</text>
+          <!-- 9 browser note -->
+          <rect class="box" x="930" y="434" width="160" height="58" rx="6"/>
+          <text class="t-title" x="1010" y="453" text-anchor="middle">9 · swap that topic</text>
+          <text class="t-sub" x="1010" y="469" text-anchor="middle">React re-renders; the books</text>
+          <text class="t-sub" x="1010" y="484" text-anchor="middle">skip pushes that are map-only</text>
+
+          <!-- connect band -->
+          <line class="rule" x1="20" y1="508" x2="1090" y2="508"/>
+          <text class="t-code" x="20" y="530">ON CONNECT</text>
+          <rect class="box" x="380" y="522" width="170" height="44" rx="6"/>
+          <text class="t-title" x="465" y="541" text-anchor="middle">API start</text>
+          <text class="t-sub" x="465" y="557" text-anchor="middle">load once, then follow</text>
+          <line class="edge" x1="1010" y1="540" x2="839" y2="540" marker-end="url(#f7-ah)"/>
+          <text class="t-edge" x="922" y="532" text-anchor="middle">open, or reopen by itself</text>
+          <line class="edge" x1="835" y1="580" x2="1006" y2="580" marker-end="url(#f7-ah)"/>
+          <text class="t-edge" x="922" y="572" text-anchor="middle">every topic once: the full desk</text>
+        </svg>
+      </div>
+      <figcaption>From a write in Mongo to the screen: change-stream delivery (milliseconds), up to 500 ms waiting for the next flush, then the network. Positions arrive about ten times a second, but the map topic is pushed at most twice a second, so the browser redraws the map at most twice a second, whatever the feed's rate.</figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Change in Mongo</th><th>Topics marked changed</th><th>What the browser then receives</th></tr></thead>
+        <tbody>
+          <tr><td><code>meta</code> (a hello)</td><td><code>status</code>, <code>map</code></td><td>feed and airport, the wrong-airport lock, reconnects; the map's zones</td></tr>
+          <tr><td><code>flights</code> inserted, updated or deleted</td><td><code>board</code>, <code>map</code></td><td>both books (phase, Delayed, turnaround, stand conflict per row); aircraft joined with the flight they are on</td></tr>
+          <tr><td><code>positions</code> inserted (newer only)</td><td><code>map</code></td><td>the aircraft on the field: transmitting, or parked on a stand</td></tr>
+          <tr><td><code>alerts</code> raised, updated or closed</td><td><code>alert</code></td><td>the active alerts</td></tr>
+          <tr><td><code>anomalies</code> inserted</td><td><code>anomaly</code></td><td>counts per reason and the latest rejected lines</td></tr>
+          <tr><td><code>flightVersions</code>, <code>movements</code>, <code>standOccupancy</code>, <code>events</code></td><td>not watched</td><td>nothing pushed: these are read when the browser asks (below)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Asked for, not pushed</th><th>When</th><th>Why not a push</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /kpis</code></td><td>every 5 s on the live desk</td><td>an aggregation over hours of history; a refresh every few seconds is plenty for hourly figures</td></tr>
+          <tr><td><code>GET /alerts/log</code></td><td>every 5 s while the Log view is open</td><td>a history of closed alerts, not the live picture</td></tr>
+          <tr><td><code>GET /history/frame?at=T</code></td><td>whenever the replay cursor moves, one request in flight, stale ones skipped</td><td>the desk at a past instant, rebuilt on the server</td></tr>
+          <tr><td><code>GET /history/volume</code>, <code>/history/events</code></td><td>when the replay range or cursor changes</td><td>the scrubber and the event log around the cursor</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 4. Gaps -->
+  <section id="gaps">
+    <h2>Connections, gaps and restarts</h2>
+    <div class="prose">
+      <p>The feed drops whenever it likes. Ingest reconnects immediately, backing off only while connecting fails. Each connection starts again with a <code>hello</code> and a <code>snapshot</code>, and its <code>seq</code> restarts at 1, so every stored record also carries a <code>connectionEpoch</code>. The gap between connections can be seconds (a reconnect) or hours (ingest down), and no rule assumes how long it is.</p>
+      <p>The only rule that needs to know about the gap is stand occupancy, because the feed has no on-block or off-block times. A change that happened during the gap is only visible in the next snapshot, so only time ingest watched is counted.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1000 360" role="img" aria-label="Connection 1 ends at the last heard time, a gap of any length follows, and connection 2 starts with a snapshot. A stay that ended during the gap is counted until last heard; a stay that started during the gap is counted from the snapshot; a stay that ran through the gap is counted through it. If ingest itself restarted, resumeFrom reloads its memory first.">
+          <defs>
+            <pattern id="f4-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <line class="hatch-line" x1="0" y1="0" x2="0" y2="8"/>
+            </pattern>
+          </defs>
+          <!-- guides -->
+          <line class="guide" x1="520" y1="32" x2="520" y2="262"/>
+          <line class="guide" x1="690" y1="32" x2="690" y2="262"/>
+          <text class="t-code" x="520" y="24" text-anchor="middle">last heard</text>
+          <text class="t-code" x="690" y="24" text-anchor="middle">next snapshot</text>
+          <!-- feed lane -->
+          <text class="t-lab" x="20" y="58">feed connection</text>
+          <rect class="conn" x="190" y="42" width="330" height="24" rx="4"/>
+          <text class="t-code" x="355" y="58" text-anchor="middle">a connection · seq 1, 2, 3 …</text>
+          <rect class="gaprect" x="520" y="42" width="170" height="24"/>
+          <rect class="conn" x="690" y="42" width="290" height="24" rx="4"/>
+          <text class="t-code" x="835" y="58" text-anchor="middle">the next one · seq from 1 again</text>
+          <text class="t-note" x="192" y="84">hello + snapshot</text>
+          <text class="t-note" x="605" y="84" text-anchor="middle">reconnect, or ingest down</text>
+          <text class="t-note" x="605" y="98" text-anchor="middle">seconds or hours</text>
+          <text class="t-note" x="696" y="84">hello + snapshot</text>
+          <text class="t-note" x="696" y="98">seen seqs cleared</text>
+          <!-- stays -->
+          <text class="t-lab" x="20" y="132">stays on stands</text>
+          <text class="t-sub" x="20" y="158">A · left during the gap</text>
+          <rect class="stay" x="260" y="148" width="260" height="12" rx="3"/>
+          <line class="unknown" x1="526" y1="154" x2="640" y2="154"/>
+          <text class="t-note" x="700" y="158">counted until last heard</text>
+
+          <text class="t-sub" x="20" y="198">B · arrived during the gap</text>
+          <line class="unknown" x1="584" y1="194" x2="684" y2="194"/>
+          <rect class="stay" x="690" y="188" width="200" height="12" rx="3"/>
+          <text class="t-note" x="898" y="194">counted from</text>
+          <text class="t-note" x="898" y="208">the snapshot</text>
+
+          <text class="t-sub" x="20" y="238">C · stayed through it</text>
+          <rect class="stay" x="380" y="228" width="480" height="12" rx="3"/>
+          <text class="t-note" x="868" y="234">counted through:</text>
+          <text class="t-note" x="868" y="248">it never left</text>
+
+          <!-- restart -->
+          <rect class="box dec" x="300" y="284" width="560" height="60" rx="6"/>
+          <text class="t-code" x="580" y="307" text-anchor="middle">ingest itself restarted? resumeFrom(loadIngestMemory())</text>
+          <text class="t-sub" x="580" y="327" text-anchor="middle">reloads open alerts, logged movements, open stays and when it last heard the feed</text>
+          <!-- legend -->
+          <rect class="stay" x="20" y="300" width="28" height="10" rx="3"/>
+          <text class="t-note" x="56" y="309">counted</text>
+          <line class="unknown" x1="20" y1="330" x2="48" y2="330"/>
+          <text class="t-note" x="56" y="334">not watched</text>
+        </svg>
+      </div>
+      <figcaption>Before this rule, a stay that ended during a gap ran until ingest next noticed it, so an outage of a few hours turned a turnaround of a few minutes into hours of a stand marked occupied. A stay that runs through a gap is counted through it because the same arrival cannot leave its stand and come back.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5. Turnaround -->
+  <section id="turnaround">
+    <h2>One turnaround, every rule</h2>
+    <div class="prose">
+      <p>An arrival and its departure share one airframe (<code>reg</code>, <code>icao24</code>). Every rule is phrased in terms of where those two flights are in their lifecycle (<code>domain/flight.ts</code>, <code>domain/stands.ts</code>). An aircraft's flights are ordered by when they land or take off, never by schedule: a late inbound often leaves its departure scheduled before its own arrival.</p>
+    </div>
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1000 330" role="img" aria-label="Arrival statuses AIRBORNE to ON_STAND and departure statuses SCHEDULED to DEPARTED on one time line, with the windows each rule covers: Delayed until the movement happens, the stand claim from landing to pushback, stand occupancy from on stand to pushback, and the landing and take-off logged at their actual times.">
+          <!-- guides at the moments rules turn on and off -->
+          <line class="guide" x1="410" y1="58" x2="410" y2="282"/>
+          <line class="guide" x1="530" y1="58" x2="530" y2="242"/>
+          <line class="guide" x1="700" y1="108" x2="700" y2="242"/>
+          <line class="guide" x1="870" y1="108" x2="870" y2="282"/>
+          <!-- arrival -->
+          <text class="t-lab" x="20" y="54">arrival (ARR)</text>
+          <line class="track-arr" x1="240" y1="50" x2="530" y2="50"/>
+          <line class="track-rest" x1="530" y1="50" x2="970" y2="50"/>
+          <circle class="dot-arr" cx="240" cy="50" r="5"/>
+          <circle class="dot-arr" cx="320" cy="50" r="5"/>
+          <circle class="dot-arr" cx="410" cy="50" r="5"/>
+          <circle class="dot-arr" cx="465" cy="50" r="5"/>
+          <circle class="dot-arr" cx="530" cy="50" r="5"/>
+          <text class="t-status" x="240" y="36" text-anchor="middle">AIRBORNE</text>
+          <text class="t-status" x="320" y="36" text-anchor="middle">APPROACH</text>
+          <text class="t-status" x="410" y="36" text-anchor="middle">LANDED</text>
+          <text class="t-status" x="465" y="36" text-anchor="middle">TAXI</text>
+          <text class="t-status" x="530" y="36" text-anchor="middle">ON_STAND</text>
+          <!-- departure -->
+          <text class="t-lab" x="20" y="104">departure (DEP)</text>
+          <line class="track-dep" x1="240" y1="100" x2="870" y2="100"/>
+          <circle class="dot-dep" cx="240" cy="100" r="5"/>
+          <circle class="dot-dep" cx="600" cy="100" r="5"/>
+          <circle class="dot-dep" cx="700" cy="100" r="5"/>
+          <circle class="dot-dep" cx="755" cy="100" r="5"/>
+          <circle class="dot-dep" cx="870" cy="100" r="5"/>
+          <text class="t-status" x="240" y="86" text-anchor="middle">SCHEDULED</text>
+          <text class="t-status" x="600" y="86" text-anchor="middle">BOARDING</text>
+          <text class="t-status" x="700" y="86" text-anchor="middle">PUSHBACK</text>
+          <text class="t-status" x="755" y="86" text-anchor="middle">TAXI</text>
+          <text class="t-status" x="870" y="86" text-anchor="middle">DEPARTED</text>
+          <!-- rule windows -->
+          <text class="t-sub" x="20" y="144">Delayed alert (arrival)</text>
+          <rect class="bar-warn" x="240" y="134" width="170" height="12" rx="3"/>
+          <text class="t-note" x="418" y="144">if late &gt; 15 min</text>
+          <text class="t-sub" x="20" y="174">Delayed alert (departure)</text>
+          <rect class="bar-warn" x="240" y="164" width="630" height="12" rx="3"/>
+          <text class="t-note" x="878" y="174">until take-off</text>
+          <text class="t-sub" x="20" y="204">Stand claim: conflicts</text>
+          <rect class="bar-dep" x="410" y="194" width="290" height="12" rx="3"/>
+          <text class="t-note" x="708" y="204">landed → pushback</text>
+          <text class="t-sub" x="20" y="234">Stand occupied: KPI</text>
+          <rect class="bar-acc" x="530" y="224" width="170" height="12" rx="3"/>
+          <text class="t-note" x="708" y="234">on-block → off-block</text>
+          <text class="t-sub" x="20" y="268">Movements logged</text>
+          <polygon class="mk" points="410,256 417,263 410,270 403,263"/>
+          <text class="t-note" x="422" y="267">landing, at its actual time: on time if ≤ sched + 15 min</text>
+          <polygon class="mk" points="870,256 877,263 870,270 863,263"/>
+          <text class="t-note" x="882" y="267">take-off</text>
+          <text class="t-note" x="20" y="312">Typical on this feed: a couple of minutes from landing to the stand, a few on it, a couple from pushback to take-off. DIVERTED and CANCELLED end every window.</text>
+        </svg>
+      </div>
+      <figcaption>The claim starts at landing because an inbound flight's stand can still change and the next arrival is routinely assigned a stand whose aircraft leaves in time. In our analysis of the feed, waiting for the landing still flagged real conflicts minutes before both aircraft were on the stand, and routine reassignments raised no false alarms.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 6. Clocks -->
+  <section id="clocks">
+    <h2>Feed clock and wall clock</h2>
+    <div class="prose">
+      <p>The <strong>wall clock</strong> is the time on the computer running the code: what <code>Date.now()</code> or <code>new Date()</code> return, the clock on the machine's wall. There are two of them here: the server's (where ingest and the API run) and the browser's (the viewer's laptop).</p>
+      <p>The <strong>feed clock</strong> is the <code>ts</code> the airport system stamps on every message: when the feed says the thing happened. A message delivered seconds late still carries the time it was produced. The <code>actual</code> landing and take-off times are on the feed clock too.</p>
+      <p>They never agree exactly: the newest feed timestamp is typically a second or so ahead of the server's clock, or behind it. The design keeps the airport's history on the feed clock and uses a wall clock only for "now" on the live desk.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>What</th><th>Clock</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Every stored version: flights, positions, alerts raised and cleared, stays on stands</td><td><span class="clock feed">feed</span></td><td>History is when things happened at the airport, not when a message reached us.</td></tr>
+          <tr><td>Landings and take-offs (movements, on-time)</td><td><span class="clock feed">feed</span></td><td>The flight's own <code>actual</code> time, even when ingest learns it later from a snapshot.</td></tr>
+          <tr><td>Last heard, for gaps and restarts</td><td><span class="clock feed">feed</span></td><td>The newest feed message applied. A late message never moves it back.</td></tr>
+          <tr><td>Live map: who is still transmitting (30 s)</td><td><span class="clock feed">feed</span></td><td>Measured against the newest position, so a skewed server clock cannot blank the map.</td></tr>
+          <tr><td>Replay at T</td><td><span class="clock feed">feed</span></td><td>The cursor is compared with feed-time records.</td></tr>
+          <tr><td>Rejected lines (anomalies)</td><td><span class="clock wall">server</span></td><td>A broken line has no timestamp to trust. That is why finding "last heard" on restart skips anomaly rows.</td></tr>
+          <tr><td>Live board: finished flights leave after 20 min</td><td><span class="clock wall">server</span></td><td>"Now" for the live board.</td></tr>
+          <tr><td>Live KPIs: the 6-hour window, how far a stay still running counts</td><td><span class="clock wall">server</span></td><td>"Now" for the live KPIs.</td></tr>
+          <tr><td>Header clock, this hour's row, replay range presets</td><td><span class="clock wall">browser</span></td><td>What the viewer's own machine says.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">With a second of skew none of this shows. It would show if the clocks were far apart: replaying recorded data through ingest (a 10× load test) stamps everything in the past, so a wall-clock "now" would hide every finished flight, and recordings older than six hours would leave the KPI table empty. The fix then is the map's approach everywhere: treat the newest feed time as "now".</p>
+  </section>
+
+  <!-- 7. Decisions -->
+  <section id="decisions">
+    <h2>Decisions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Decision</th><th>Instead of</th><th>Because</th></tr></thead>
+        <tbody>
+          <tr><td>Duplicates: a set of seqs seen on this connection</td><td>dropping any seq at or below the last one</td><td>The feed delivers late messages that are new (49 after 50), which a high-water mark would drop. Real duplicates arrive many times a minute, and the set drops every one.</td></tr>
+          <tr><td>Order: per flight and per aircraft, by feed timestamp</td><td>ordering by seq</td><td>An older version never rewinds a flight or an aircraft, whatever order it arrives in.</td></tr>
+          <tr><td>Flights keyed by the feed's <code>flightId</code>: flight number + date</td><td>flight number and aircraft</td><td>The same flight number flies on the same aircraft day after day, and one aircraft flies both halves of a turnaround. Each occurrence has its own <code>flightId</code>, so a recurring flight never overwrites an earlier one; a newer version of the same occurrence replaces it, and <code>flightVersions</code> keeps the old one.</td></tr>
+          <tr><td>Only aircraft within 15 km of the airport</td><td>tracking everything the feed reports</td><td>The desk is about traffic at the field. Positions further out are real, just not ours, so they are skipped, not logged as anomalies: inbound aircraft report every second from well beyond 15 km and would bury the real ones. Measured as a great-circle distance from the point the <code>hello</code> announces.</td></tr>
+          <tr><td>Each raising of an alert is its own record</td><td>one record per flight or stand</td><td>Stands are reused all day, and a flight can be delayed again after recovering. Reusing the record would overwrite the earlier alert in the log; instead its id is the subject plus when it was raised, and the subject finds the one open alert.</td></tr>
+          <tr><td><code>hello</code> is a contract</td><td>ingesting whatever arrives</td><td>A feed for another airport locks out and the desk says so, instead of a plausible board for the wrong airport.</td></tr>
+          <tr><td>Separate ingest + change streams</td><td>one process, or polling</td><td>Feed trouble cannot take serving down, several API instances can run, and the API's copy is at most one change behind.</td></tr>
+          <tr><td>A snapshot is the full list</td><td>merging it into what we have</td><td>Flights it leaves out have left the feed: they are pruned and their alerts closed.</td></tr>
+          <tr><td>Movements from snapshots too, once per flight + kind</td><td>only live LANDED / DEPARTED messages</td><td>Snapshots carry recently finished flights with their actual times; a unique key makes every repeat a no-op.</td></tr>
+          <tr><td>Stand conflict from landing to pushback</td><td>flagging every arrival assigned to an occupied stand</td><td>Assignment conflicts fire on nearly every turnaround. Waiting for the landing still flags real conflicts minutes early, without false alarms.</td></tr>
+          <tr><td>On time: at most 15 min late, early counts, per hour of landing</td><td>storing an on-time flag</td><td>The log keeps the schedule and the actual time; the threshold is a reporting choice, so history re-derives if it changes.</td></tr>
+          <tr><td>Stand use: on-block to off-block, watched time only, merged per stand</td><td>ending a stay when ingest next notices</td><td>No gap of any length counts as occupied, and two aircraft on one stand occupy it once.</td></tr>
+          <tr><td>KPI math split by kind</td><td>everything in one place</td><td>Counting per hour is a Mongo aggregation; splitting stays across hours is a pure function with unit tests.</td></tr>
+          <tr><td>Live working state in memory, Mongo as durable history</td><td>querying Mongo for every view</td><td>Each connection's snapshot re-seeds the picture; Mongo records what happened.</td></tr>
+          <tr><td>Server-sent events to the browser</td><td>WebSockets</td><td>One-way, reconnects by itself, plain HTTP: the desk only ever listens.</td></tr>
+          <tr><td>Flight history in its own <code>flightVersions</code> collection</td><td>versions inside <code>flights</code></td><td><code>flights</code> stays the current picture the live mirror needs; replay takes the newest version per flight at T.</td></tr>
+          <tr><td>Alerts as transitions, resumed on restart</td><td>recomputing alert lists</td><td>Closing an alert needs knowing it was raised, so a restarted ingest reloads open alerts, movements, open stays and when it last heard the feed. Replay re-derives alerts, since the rules are pure functions.</td></tr>
+          <tr><td>Smooth at about 10 updates a second</td><td>rendering every change</td><td>At most two pushes a second per topic; the books are memoised, so map pushes skip them; a marker's DOM is rebuilt only when its look changes; replay keeps one frame request in flight.</td></tr>
+          <tr><td>The map runs on the feed's clock</td><td>the server's clock</td><td>A skewed server clock cannot blank the map (<a href="#clocks">clocks</a>).</td></tr>
+          <tr><td>Replay frames built on the server</td><td>folding events in the browser</td><td>One definition of the board for live and replay, and no megabytes of positions sent to the client.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Extras -->
+  <section id="extras">
+    <h2>Extras, and why</h2>
+    <ul class="points">
+      <li><strong>Turnarounds on the board.</strong> Every row shows the aircraft's registration. Selecting a flight highlights the other half of its turnaround in the other list, and the flight card links to it. Ground staff follow aircraft, not flight numbers, and the stand-conflict rule needs the same pairing.</li>
+      <li><strong>Two alerts and three KPIs.</strong> Stand conflicts beside Delayed; on-time performance and stand utilisation beside movements.</li>
+      <li><strong>Replay of the whole desk.</strong> Board, map, alerts and KPIs at any instant, with an event-volume scrubber, playback up to 60× and the event log around the cursor. It answers the question ops asks after an incident: what did the board show at 14:32?</li>
+      <li><strong>The anomaly tape.</strong> What the normalizer rejected and why, live. It is how the line framer and several alert and movement fixes were found.</li>
+      <li><strong>The wrong-airport lock.</strong> A <code>hello</code> for another airport locks the feed out and the desk says so, instead of showing a plausible board for the wrong airport.</li>
+      <li><strong>The truth check.</strong> <code>npm run truth-check</code> compares the running desk with the clean feed (<a href="#tests">tests</a>).</li>
+      <li><strong>A one-command dev stack</strong> with hot reload: <code>docker compose up -d</code>.</li>
+    </ul>
+  </section>
+
+  <!-- Tests -->
+  <section id="tests">
+    <h2>What is tested, and why</h2>
+    <div class="prose">
+      <p>The tests sit where the board's truth is decided. Everything that turns feed messages into flights, alerts and KPIs is pure domain code, so most tests run with no Mongo and no network. Where the logic lives in a Mongo query, the test runs the real query against a throwaway MongoDB. One end-to-end check then compares the running desk with the clean feed.</p>
+      <p><code>npm test</code> runs 55 tests: 49 over the domain and 6 against MongoDB 7, the version the stack runs, which <code>mongodb-memory-server</code> downloads once.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Area</th><th>What must hold</th><th>Why it was worth a test</th></tr></thead>
+        <tbody>
+          <tr><td>Normalizer</td><td>a late new seq is kept and a repeat dropped; 0,0 positions rejected, far ones passed on; the seen set resets on reconnect</td><td>the realistic feed does all of these, and a mistake silently loses or invents data</td></tr>
+          <tr><td>Line framing</td><td>an object split across two lines is rejoined; a fragment that is never completed is given up</td><td>split lines happen on the realistic feed</td></tr>
+          <tr><td>Applying messages</td><td>a wrong airport locks; a snapshot replaces; an older version never rewinds; a movement counts once; alerts of flights that left the feed close; aircraft beyond 15 km ignored, listed or reporting</td><td>the rules that keep the picture truthful</td></tr>
+          <tr><td>Flight lifecycle, Delayed</td><td>every status maps to a phase; Delayed only while the movement is still to come</td><td>every other rule is phrased in these phases</td></tr>
+          <tr><td>Alert lifecycle</td><td>raise; update in place, keeping when it was raised; write nothing when unchanged; close with the time; delayed again, a new alert</td><td>alerts are persisted transitions, not recomputed lists</td></tr>
+          <tr><td>Replay and turnarounds</td><td>alerts re-derived at T; board visibility judged at T, not now; transmitting, parked and gone aircraft; which flight an aircraft is on; arrivals paired with departures by movement time</td><td>replay must show exactly what live showed</td></tr>
+          <tr><td>Timeline</td><td>a rejected <code>hello</code> is logged; an ignored snapshot is not</td><td>a snapshot row is where replay starts counting</td></tr>
+          <tr><td>Stand conflicts</td><td>taxiing onto an occupied stand; two aircraft on one; normal sequencing; arrivals still on approach; an aircraft and its own departure; raised on landing, closed on pushback; re-derived in replay</td><td>the rule waits for the landing on purpose, so its edges are pinned down</td></tr>
+          <tr><td>KPIs, domain</td><td>a landing logged with its schedule; a stay from on-block to pushback, not reopened by a snapshot; a stay that ended during a gap of any length ends when the feed was last heard; minutes split across hours; a stand two aircraft are on counted once</td><td>interval maths and gap handling are easy to get subtly wrong</td></tr>
+          <tr><td>Alert log, store</td><td>every raising of a recurring alert kept; a restarted ingest closes the open one</td><td>the record key decides what the log keeps, and only a real Mongo upsert shows it</td></tr>
+          <tr><td>KPIs, store</td><td>on time up to exactly 15 min late; six whole clock hours; stays closed in place; the KPIs at an earlier instant; a restart after ingest was down</td><td>this logic lives in Mongo queries, which only a real Mongo can test</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prose">
+      <p><strong>The tests can fail.</strong> Each store test was checked by breaking, one at a time, the on-time threshold, the hour window, the open-stay filter, the stay's record key, the gap rule, the late-message guard, the restored last-heard time, the anomaly filter and the alert record key, and watching it fail.</p>
+      <p><strong>The truth check</strong> (<code>npm run truth-check</code>) opens its own connection to the clean feed, takes its snapshot as ground truth for 15 seconds, and compares it with what the API serves from the realistic feed: every flight's status, stand and times; the Delayed and stand-conflict alerts; the transmitting aircraft within 15 km and their positions; the landing and take-off log with each time and schedule; and which aircraft are on a stand. It restates the rules itself instead of importing the API's code, so it can catch bugs in them. It exits non-zero on a real mismatch and reports timing separately: messages the realistic feed delivered seconds late, flights the feed retired without a message, aircraft that left coverage moments ago.</p>
+      <p><strong>Not covered by automated tests:</strong> the other Mongo stores (board, replay pictures, timeline), the change-stream mirror and the web UI. The truth check exercises the stores and the mirror against the running stack.</p>
+    </div>
+  </section>
+
+  <!-- Two more days -->
+  <section id="next">
+    <h2>With two more days</h2>
+    <ul class="points">
+      <li><strong>More analysis of the feed.</strong> Record hours of the realistic feed and measure the patterns this design rests on: how late flights run, how long reconnect gaps last, how often stands are reassigned and how often that ends in a conflict, and whether <code>actual</code> times are ever corrected after they are first sent.</li>
+      <li><strong>Review normalization for what still gets through.</strong> It checks type, seq and coordinates and trusts the rest. Next: timestamps that parse and are not far in the future, known statuses and kinds, stands that exist in the zones, ARR and DEP consistent with origin and destination, plausible altitude and speed.</li>
+      <li><strong>Settle open questions about movements</strong> with the team. Should a landing seen only in the snapshot of a fresh start count? Do go-arounds or diversions count? On-time per hour of landing, or of schedule, and does early count as on time? Should an hour that was only partly watched be marked as partial on the desk?</li>
+      <li><strong>Observability.</strong> Structured logs, and metrics for messages per second, rejects by reason, delay from feed time to stored and to pushed, change-stream lag and connected desks. Show feed staleness on the desk (today a dead ingest freezes the board without saying so) and alert when ingest stops hearing the feed.</li>
+      <li><strong>Close the hydrate/watch gap.</strong> Start the change streams from the cluster time read before hydrating, so a change landing in between cannot be missed.</li>
+      <li><strong>More code cleanup and clarifications.</strong> Build each pushed topic once for all connected desks instead of once per desk. Use one feed-time "now" for the board and the KPIs, as the map already does. Merge the two feed-link types. Keep <code>connectionEpoch</code> across ingest restarts.</li>
+      <li><strong>More tests.</strong> Integration tests for the other stores and the mirror on a throwaway replica set; ingest end to end against a fake NDJSON server (framing, reconnects, resume); the web hooks (stale frame requests skipped, one topic swapped per push); property tests for the interval maths.</li>
+      <li><strong>Retention.</strong> A TTL or rollups on <code>positions</code> and <code>events</code>, which grow by about ten documents a second.</li>
+      <li><strong>A third alert: runway occupied.</strong> Point-in-polygon against the <code>hello</code> zones, tracking who is on the runway as aircraft enter and leave.</li>
+      <li><strong>The 10× load test.</strong> Replay recorded NDJSON through ingest at ten times the rate and measure where it bends. The first suspect is that ingest awaits each message's writes in order.</li>
+    </ul>
+  </section>
+
+  <!-- Code map -->
+  <section id="code">
+    <h2>Where the code is</h2>
+    <div class="table-wrap">
+      <pre class="tree">packages/contracts/   wire types shared by the API and the web (types only)
+apps/api/src/
+  domain/             pure rules, no I/O: flight lifecycle, normalize, apply, state,
+                      alerts, stands, occupancy, timeline, replay, time
+  feed/               ingest: NDJSON framing and the reconnect loop
+  db/                 the Mongo connection and stores (ingest writes, airport reads, timeline reads)
+  sync/               the API's mirror: load once, then follow change streams
+  live/  history/     controllers: live REST and SSE; replay frame, volume, events
+apps/api/test/        domain tests, store tests (kpi-store) and their throwaway Mongo
+apps/web/
+  lib/                API client, formatters, time units, hooks (live desk, timeline, playback)
+  components/         OpsView, the desk both screens render; map/, ReplayBar, tapes, KpiTable
+scripts/truth-check.mjs   the end-to-end check against the clean feed
+docs/index.html       this page
+docker/dev/           the Node dev image</pre>
+    </div>
+  </section>
+
+  <!-- Time and AI usage -->
+  <section id="ai">
+    <h2>Time and AI usage</h2>
+    <div class="prose">
+      <p><strong>Time.</strong> About 7 hours in total, AI-assisted throughout (Cursor first, then Claude Code).</p>
+      <p><strong>Tools.</strong> Cursor for the first build: ingest, domain rules, API, the first board, the map and the history scrubber. Claude Code (in VS Code) for the replay rebuild, <code>flightVersions</code>, the Docker dev stack, the desk redesign, a verification pass against the running system, a restructuring with the shared contract package, the on-time and stand-utilisation KPIs and their tests, a naming pass, and these docs. Domain rules were designed and argued over before code was generated, and I can walk through every file.</p>
+    </div>
+    <h3 class="subhead">Where I overrode or redirected the AI</h3>
+    <ul class="points">
+      <li><strong>Duplicates.</strong> The first design dropped anything with <code>seq &lt;= lastSeq</code>. I pointed out that 49 after 50 is a real, new message in this feed, so we moved to a seen-seq set plus per-entity <code>ts</code> freshness.</li>
+      <li><strong><code>hello</code> as configuration.</strong> I treated it as the airport contract, which produced the lock and banner instead of ingesting whatever arrives.</li>
+      <li><strong>Keep what we drop.</strong> I asked for the anomaly tape. On real runs it exposed truncated JSON, duplicates and 0,0, which drove the framer and the alert and movement fixes.</li>
+      <li><strong>Wording that matches the system.</strong> "In-memory source of truth" became "live working state; Mongo is durable history": the snapshot re-seeds the state, and Mongo remembers.</li>
+      <li><strong>Map behaviour.</strong> The first map re-fitted on every update and framed the long approach, so the field looked tiny and the stands seemed missing (all the zones were there). Now it fits the field once and has explicit range buttons. I also rejected "pan when the plane nears the edge": the selected aircraft now stays centred.</li>
+      <li><strong>Layout.</strong> The trading-desk ARR | map | DEP layout was my product call.</li>
+      <li><strong>Architecture.</strong> Once the base worked, I pushed past "one process is enough" to ingest, change streams and history.</li>
+      <li><strong>Replay as the desk, not a log.</strong> The first history screen was an event list; I asked for the live desk at T. When the AI pointed out that <code>flights</code> only keeps the latest version, I asked for a proper flight-version log rather than a workaround, hence <code>flightVersions</code>.</li>
+      <li><strong>Turnarounds.</strong> I asked for the registration on every row and for an arrival to highlight its departure, so the same aircraft is easy to follow across the two lists.</li>
+      <li><strong>Purge and re-validate.</strong> I wiped Mongo and re-checked after fixes, so the picture was not built on stale data.</li>
+      <li><strong>Parked aircraft.</strong> I noticed a boarding aircraft missing from the map while the board showed it on its stand. The AI's "only aircraft heard in the last 30 s" rule could not tell parked from gone. It now keeps silent aircraft stopped on the ground as parked. The same investigation found the inbound aircraft attached to its departure instead of its arrival.</li>
+      <li><strong>Stand minutes against the history.</strong> I questioned a stand shown fully occupied for hours in which nothing moved. A stay that ended while ingest was down had been counted until ingest noticed. Now a stay that ends during a gap ends when the feed was last heard.</li>
+      <li><strong>No assumed reconnect rhythm.</strong> How often this test feed reconnects is specific to it, not to real feeds, so I had the code checked for any reliance on it: the gap rule works for a gap of any length.</li>
+      <li><strong>Legibility.</strong> I asked for full names instead of abbreviations across the code and styles, units of time in one place, and these diagrams.</li>
+    </ul>
+    <h3 class="subhead">What AI verification caught</h3>
+    <div class="prose">
+      <p>Claude Code checked its own work against the running stack: the live board against a replay frame at the same instant, the stored data against the flight history, logs and process lists. That surfaced these bugs, all but the last two already in the system:</p>
+    </div>
+    <ul class="points">
+      <li>alerts that never closed after an ingest restart, or when a flight left the feed;</li>
+      <li>flights that stayed on the live board after the feed dropped them;</li>
+      <li>the wrong-airport lock never reaching the UI;</li>
+      <li>reconnect backoff that never reset, losing up to 30 s of data per drop;</li>
+      <li>a delay alert that reopened while an arrival taxied in;</li>
+      <li>its own Docker setup leaving old ingest processes writing in parallel after dev restarts (the slim image has no <code>ps</code>);</li>
+      <li>its own earlier rule ordering an aircraft's flights by schedule, which mis-paired turnarounds whenever the inbound was late (found while measuring stand overlaps before writing the stand-conflict rule).</li>
+    </ul>
+    <div class="prose">
+      <p>Fixes to domain logic come with a test.</p>
+    </div>
+  </section>
+</div>
+</body>
+</html>

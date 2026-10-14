@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-ingest/
+.next/
+.env
+*.log
+coverage/
+.DS_Store
+
+# TypeScript build cache and Next.js generated types
+*.tsbuildinfo
+next-env.d.ts
